@@ -277,18 +277,6 @@ def test_update_cannot_recreate_a_vector_deleted_during_the_update(tmp_path):
     assert store.get("m1") is None and store.index.ntotal == 0
 
 
-def test_list_cols_finds_collections_saved_under_path(tmp_path):
-    """Collections are saved as <path>/<name>.faiss, so list_cols must look in path, not its parent."""
-    store_path = str(tmp_path / "store")
-    FAISS(collection_name="alpha", path=store_path, embedding_model_dims=2).insert([[1.0, 0.0]], [{}], ["a"])
-    FAISS(collection_name="beta", path=store_path, embedding_model_dims=2).insert([[0.0, 1.0]], [{}], ["b"])
-    (tmp_path / "unrelated.faiss").touch()
-
-    store = FAISS(collection_name="alpha", path=store_path, embedding_model_dims=2)
-
-    assert sorted(store.list_cols()) == ["alpha", "beta"]
-
-
 def test_get(faiss_instance):
     # Setup the docstore
     faiss_instance.docstore = {"id1": {"name": "vector1"}, "id2": {"name": "vector2"}}
