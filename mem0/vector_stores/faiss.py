@@ -346,6 +346,29 @@ class FAISS(VectorStoreBase):
 
         return self
 
+    def _remove_rows(self, vector_ids: set) -> bool:
+        """Drop every index row mapped to one of ``vector_ids`` and renumber the rest.
+
+        Leaves the docstore and the on-disk files to the caller. Returns whether any row was removed.
+        """
+        if not any(vid in vector_ids for vid in self.index_to_id.values()):
+            return False
+
+        remaining_vectors = []
+        new_index_to_id = {}
+        for old_idx in sorted(self.index_to_id.keys()):
+            if self.index_to_id[old_idx] in vector_ids:
+                continue
+            remaining_vectors.append(self.index.reconstruct(int(old_idx)))
+            new_index_to_id[len(new_index_to_id)] = self.index_to_id[old_idx]
+
+        self.index.reset()
+        if remaining_vectors:
+            self.index.add(np.array(remaining_vectors, dtype=np.float32))
+        self.index_to_id = new_index_to_id
+        return True
+
+    @_locked
     def insert(
         self,
         vectors: List[list],
@@ -372,11 +395,21 @@ class FAISS(VectorStoreBase):
         if len(vectors) != len(ids) or len(vectors) != len(payloads):
             raise ValueError("Vectors, payloads, and IDs must have the same length")
 
+        # One id maps to one row: within a batch the last occurrence wins, and an id that is
+        # already stored has its old row dropped, so insert replaces instead of duplicating.
+        latest = {vector_id: i for i, vector_id in enumerate(ids)}
+        if len(latest) != len(ids):
+            keep = sorted(latest.values())
+            vectors = [vectors[i] for i in keep]
+            payloads = [payloads[i] for i in keep]
+            ids = [ids[i] for i in keep]
+
         vectors_np = np.array(vectors, dtype=np.float32)
 
         if self._should_normalize():
             faiss.normalize_L2(vectors_np)
 
+        self._remove_rows(set(ids))
         self.index.add(vectors_np)
 
         starting_idx = len(self.index_to_id)
@@ -467,31 +500,8 @@ class FAISS(VectorStoreBase):
         if self.index is None:
             raise ValueError("Collection not initialized. Call create_col first.")
 
-        index_to_delete = None
-        for idx, vid in self.index_to_id.items():
-            if vid == vector_id:
-                index_to_delete = idx
-                break
-
-        if index_to_delete is not None:
-            # Reconstruct remaining vectors and rebuild the FAISS index
-            remaining_vectors = []
-            new_index_to_id = {}
-            new_idx = 0
-            for old_idx in sorted(self.index_to_id.keys()):
-                if old_idx == index_to_delete:
-                    continue
-                remaining_vectors.append(self.index.reconstruct(int(old_idx)))
-                new_index_to_id[new_idx] = self.index_to_id[old_idx]
-                new_idx += 1
-
-            self.index.reset()
-            if remaining_vectors:
-                self.index.add(np.array(remaining_vectors, dtype=np.float32))
-
+        if self._remove_rows({vector_id}):
             self.docstore.pop(vector_id, None)
-            self.index_to_id = new_index_to_id
-
             self._save()
 
             logger.info(f"Deleted vector {vector_id} from collection {self.collection_name}")

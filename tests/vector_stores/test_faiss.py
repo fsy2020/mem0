@@ -277,6 +277,31 @@ def test_update_cannot_recreate_a_vector_deleted_during_the_update(tmp_path):
     assert store.get("m1") is None and store.index.ntotal == 0
 
 
+def test_insert_existing_id_replaces_vector_instead_of_duplicating(tmp_path):
+    """Re-inserting an id must replace its vector; a leftover row would show up as a duplicate hit,
+    survive delete() as an orphan, and later match a different memory stored under that id."""
+    store = FAISS(collection_name="dup", path=str(tmp_path / "dup"), embedding_model_dims=2)
+    store.insert([[1.0, 0.0]], [{"data": "old"}], ["a"])
+    store.insert([[0.0, 1.0]], [{"data": "new"}], ["a"])
+
+    assert store.index.ntotal == 1
+    hits = store.search("", [[0.0, 1.0]], top_k=5)
+    assert [(h.id, h.payload["data"]) for h in hits] == [("a", "new")]
+
+    store.delete("a")
+    assert store.index.ntotal == 0
+    assert store.get("a") is None
+
+
+def test_insert_same_id_twice_in_one_batch_keeps_last(tmp_path):
+    store = FAISS(collection_name="dup", path=str(tmp_path / "dup"), embedding_model_dims=2)
+    store.insert([[1.0, 0.0], [0.0, 1.0]], [{"data": "first"}, {"data": "second"}], ["a", "a"])
+
+    assert store.index.ntotal == 1
+    assert store.get("a").payload["data"] == "second"
+    assert [h.payload["data"] for h in store.search("", [[0.0, 1.0]], top_k=5)] == ["second"]
+
+
 def test_get(faiss_instance):
     # Setup the docstore
     faiss_instance.docstore = {"id1": {"name": "vector1"}, "id2": {"name": "vector2"}}
